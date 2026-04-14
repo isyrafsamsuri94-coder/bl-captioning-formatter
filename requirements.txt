@@ -1,0 +1,3 @@
+streamlit
+spacy
+en-core-web-sm
