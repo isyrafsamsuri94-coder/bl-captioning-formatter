@@ -140,6 +140,16 @@ def forbidden_break_token_indices(doc) -> Set[int]:
         if tok.lower_ in TITLES or tok.lower_ in UNITS:
             forbid.add(i)
 
+        # 's-genitives: never split "Cas9's | nuclease" or "Cas9 | 's"
+        if re.search(r"[\u2019']s$", tok.text) and i > 0:
+            forbid.add(i - 1)  # before 's
+            forbid.add(i)      # after 's
+
+        # of-genitives: also forbid breaking *before* "of" (ADP rule already
+        # forbids breaking after "of", so "X of Y" is kept fully intact)
+        if tok.lower_ == "of" and i > 0:
+            forbid.add(i - 1)
+
     return forbid
 
 # ============================================================
@@ -192,6 +202,8 @@ def best_two_line_split(block_text: str, cfg: SubtitleCfg) -> Optional[str]:
 
         if len(left) > cfg.max_len or len(right) > cfg.max_len:
             continue
+        if len(right) < 15:
+            continue
         if is_break_after_function_word(left):
             continue
 
@@ -216,22 +228,27 @@ def split_into_paragraphs(text: str, preserve: bool) -> List[str]:
         if p.strip()
     ]
 
-def sentence_or_clause_units(paragraph: str) -> List[str]:
+def _regex_split_sentences(text: str) -> List[str]:
+    """Split on obvious sentence boundaries that spaCy may miss."""
+    parts = re.split(r'(?<=[.!?])\s+(?=[A-Z\u201c"])', text)
+    return [p.strip() for p in parts if p.strip()]
+
+def sentence_units(paragraph: str) -> List[str]:
     para = normalize_ws(paragraph)
     if not para:
         return []
-
     doc = nlp(para)
-    units = [sent.text.strip() for sent in doc.sents]
+    spacy_sents = [normalize_ws(sent.text) for sent in doc.sents if sent.text.strip()]
+    result = []
+    for s in spacy_sents:
+        result.extend(_regex_split_sentences(s))
+    return result
 
-    final_units = []
-    for u in units:
-        if len(u) > 180:
-            final_units.extend(re.split(r"[,;:]", u))
-        else:
-            final_units.append(u)
-
-    return [normalize_ws(u) for u in final_units if u.strip()]
+def clause_splits(sentence: str) -> List[str]:
+    if len(sentence) > 180:
+        parts = re.split(r"[,;:]", sentence)
+        return [normalize_ws(p) for p in parts if p.strip()]
+    return [sentence]
 
 def pack_units_into_blocks(units: List[str], cfg: SubtitleCfg) -> List[str]:
     blocks = []
@@ -272,6 +289,83 @@ def hard_wrap_to_blocks(text: str, cfg: SubtitleCfg) -> List[str]:
     return blocks
 
 # ============================================================
+# Smart recursive block splitter
+# ============================================================
+
+def split_block_to_lines(text: str, max_len: int) -> List[str]:
+    """Recursively split text into lines each <= max_len at appropriate boundaries."""
+    text = normalize_ws(text)
+    if len(text) <= max_len:
+        return [text]
+
+    doc = nlp(text)
+    forbid = forbidden_break_token_indices(doc)
+
+    best_score = -float('inf')
+    best_left: Optional[str] = None
+    best_right: Optional[str] = None
+
+    for i, tok in enumerate(doc[:-1]):
+        if tok.i in forbid:
+            continue
+
+        split_pos = tok.idx + len(tok.text)
+        left = text[:split_pos].rstrip()
+        right = text[split_pos:].lstrip()
+
+        if not right or len(right) < 10:
+            continue
+        if is_break_after_function_word(left):
+            continue
+
+        # Prefer punctuation boundaries; penalise very unbalanced splits
+        score = punctuation_bonus(left) * 100 - abs(len(left) - len(right))
+        if score > best_score:
+            best_score = score
+            best_left = left
+            best_right = right
+
+    if best_left is None:
+        # Hard fallback: split at word boundary near max_len
+        idx = text.rfind(" ", 0, max_len)
+        if idx == -1:
+            idx = max_len
+        best_left = text[:idx].strip()
+        best_right = text[idx:].strip()
+
+    result = split_block_to_lines(best_left, max_len)
+    if best_right:
+        result.extend(split_block_to_lines(best_right, max_len))
+    return result
+
+# ============================================================
+# Merge orphaned conjunctions
+# ============================================================
+
+_ORPHAN_CONJUNCTIONS = {"and", "or", "but", "nor", "yet", "so"}
+
+def merge_orphaned_conjunctions(blocks: List[str], cfg: SubtitleCfg) -> List[str]:
+    """Join a lone conjunction block with the following content block."""
+    result: List[str] = []
+    i = 0
+    while i < len(blocks):
+        block = blocks[i]
+        if block != "" and block.strip().lower() in _ORPHAN_CONJUNCTIONS:
+            # Find the next non-empty block
+            j = i + 1
+            while j < len(blocks) and blocks[j] == "":
+                j += 1
+            if j < len(blocks):
+                merged = f"{block} {blocks[j]}"
+                if len(merged) <= cfg.block_budget:
+                    result.append(merged)
+                    i = j + 1
+                    continue
+        result.append(block)
+        i += 1
+    return result
+
+# ============================================================
 # Remove trailing commas
 # ============================================================
 
@@ -296,18 +390,16 @@ def format_transcript_rules(text: str, cfg: SubtitleCfg) -> List[str]:
     paragraphs = split_into_paragraphs(text, cfg.preserve_paragraph_breaks)
 
     for p in paragraphs:
-        units = sentence_or_clause_units(p)
-        blocks = pack_units_into_blocks(units, cfg)
-
-        for b in blocks:
-            split = best_two_line_split(b, cfg)
-            if split:
-                blocks_out.append(split)
-            else:
-                hard_blocks = hard_wrap_to_blocks(b, cfg)
-                blocks_out.extend(hard_blocks)
-
-        blocks_out.append("")
+        sentences = sentence_units(p)
+        for sent in sentences:
+            clauses = clause_splits(sent)
+            blocks = pack_units_into_blocks(clauses, cfg)
+            for b in blocks:
+                if len(b) > cfg.max_len:
+                    blocks_out.extend(split_block_to_lines(b, cfg.max_len))
+                else:
+                    blocks_out.append(b)
+            blocks_out.append("")
 
     if blocks_out and blocks_out[-1] == "":
         blocks_out.pop()
@@ -327,16 +419,19 @@ def blocks_to_plain_text(blocks: List[str]) -> str:
 def format_transcript_hybrid(text: str, cfg: SubtitleCfg) -> str:
     blocks = format_transcript_rules(text, cfg)
     blocks = remove_trailing_commas_from_blocks(blocks)
-    return blocks_to_plain_text(blocks)
+    blocks = merge_orphaned_conjunctions(blocks, cfg)
+    # Join non-empty blocks with exactly one blank line between them
+    content_blocks = [b for b in blocks if b != ""]
+    return "\n\n".join(content_blocks)
 
 # ============================================================
 # Streamlit UI
 # ============================================================
 
-st.title("Captioning Formatter Tool")
+st.title("Captioning Formatter Tool (Beta)")
 st.markdown(
     "Upload a text file. The formatted captions will be generated "
-    "according to your rule-based subtitle constraints."
+    "according to some rule-based caption constraints."
 )
 
 uploaded_file = st.file_uploader("Upload a .txt file", type=["txt"])
@@ -345,16 +440,19 @@ if uploaded_file:
     input_text = uploaded_file.read().decode("utf-8")
 
     cfg = SubtitleCfg(
-        max_len=120,
-        max_lines=1,
-        block_budget=120,
-        preserve_paragraph_breaks=True,
+        max_len=110,
+        max_lines=2,
+        block_budget=110,
+        preserve_paragraph_breaks=False,
     )
 
     with st.spinner("Formatting captions..."):
         output_text = format_transcript_hybrid(input_text, cfg)
 
     st.success("Formatting complete!")
+
+    st.subheader("Preview")
+    st.text_area("", value=output_text, height=400, disabled=True, label_visibility="collapsed")
 
     st.download_button(
         label="Download formatted text",
