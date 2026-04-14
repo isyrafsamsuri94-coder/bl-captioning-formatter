@@ -172,6 +172,10 @@ def best_two_line_split(block_text: str, cfg: SubtitleCfg) -> Optional[str]:
     if len(text) <= cfg.max_len:
         return text
 
+    # If only 1 line is allowed and text exceeds max_len, refuse to split
+    if cfg.max_lines == 1:
+        return None
+
     doc = nlp(text)
     forbid = forbidden_break_token_indices(doc)
 
@@ -341,8 +345,8 @@ if uploaded_file:
     input_text = uploaded_file.read().decode("utf-8")
 
     cfg = SubtitleCfg(
-        max_len=60,
-        max_lines=2,
+        max_len=120,
+        max_lines=1,
         block_budget=120,
         preserve_paragraph_breaks=True,
     )
