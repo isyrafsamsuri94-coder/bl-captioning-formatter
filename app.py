@@ -289,83 +289,6 @@ def hard_wrap_to_blocks(text: str, cfg: SubtitleCfg) -> List[str]:
     return blocks
 
 # ============================================================
-# Smart recursive block splitter
-# ============================================================
-
-def split_block_to_lines(text: str, max_len: int) -> List[str]:
-    """Recursively split text into lines each <= max_len at appropriate boundaries."""
-    text = normalize_ws(text)
-    if len(text) <= max_len:
-        return [text]
-
-    doc = nlp(text)
-    forbid = forbidden_break_token_indices(doc)
-
-    best_score = -float('inf')
-    best_left: Optional[str] = None
-    best_right: Optional[str] = None
-
-    for i, tok in enumerate(doc[:-1]):
-        if tok.i in forbid:
-            continue
-
-        split_pos = tok.idx + len(tok.text)
-        left = text[:split_pos].rstrip()
-        right = text[split_pos:].lstrip()
-
-        if not right or len(right) < 10:
-            continue
-        if is_break_after_function_word(left):
-            continue
-
-        # Prefer punctuation boundaries; penalise very unbalanced splits
-        score = punctuation_bonus(left) * 100 - abs(len(left) - len(right))
-        if score > best_score:
-            best_score = score
-            best_left = left
-            best_right = right
-
-    if best_left is None:
-        # Hard fallback: split at word boundary near max_len
-        idx = text.rfind(" ", 0, max_len)
-        if idx == -1:
-            idx = max_len
-        best_left = text[:idx].strip()
-        best_right = text[idx:].strip()
-
-    result = split_block_to_lines(best_left, max_len)
-    if best_right:
-        result.extend(split_block_to_lines(best_right, max_len))
-    return result
-
-# ============================================================
-# Merge orphaned conjunctions
-# ============================================================
-
-_ORPHAN_CONJUNCTIONS = {"and", "or", "but", "nor", "yet", "so"}
-
-def merge_orphaned_conjunctions(blocks: List[str], cfg: SubtitleCfg) -> List[str]:
-    """Join a lone conjunction block with the following content block."""
-    result: List[str] = []
-    i = 0
-    while i < len(blocks):
-        block = blocks[i]
-        if block != "" and block.strip().lower() in _ORPHAN_CONJUNCTIONS:
-            # Find the next non-empty block
-            j = i + 1
-            while j < len(blocks) and blocks[j] == "":
-                j += 1
-            if j < len(blocks):
-                merged = f"{block} {blocks[j]}"
-                if len(merged) <= cfg.block_budget:
-                    result.append(merged)
-                    i = j + 1
-                    continue
-        result.append(block)
-        i += 1
-    return result
-
-# ============================================================
 # Remove trailing commas
 # ============================================================
 
@@ -419,10 +342,7 @@ def blocks_to_plain_text(blocks: List[str]) -> str:
 def format_transcript_hybrid(text: str, cfg: SubtitleCfg) -> str:
     blocks = format_transcript_rules(text, cfg)
     blocks = remove_trailing_commas_from_blocks(blocks)
-    blocks = merge_orphaned_conjunctions(blocks, cfg)
-    # Join non-empty blocks with exactly one blank line between them
-    content_blocks = [b for b in blocks if b != ""]
-    return "\n\n".join(content_blocks)
+    return blocks_to_plain_text(blocks)
 
 # ============================================================
 # Streamlit UI
