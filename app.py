@@ -22,8 +22,8 @@ nlp = load_nlp()
 
 @dataclass
 class SubtitleCfg:
-    max_len: int = 60
-    max_lines: int = 2
+    max_len: int = 120
+    max_lines: int = 1
     block_budget: int = 120
     preserve_paragraph_breaks: bool = True
 
