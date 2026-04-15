@@ -129,9 +129,12 @@ def forbidden_break_token_indices(doc) -> Set[int]:
         if tok.dep_ in {"aux", "neg", "prt"}:
             forbid.add(i)
 
-        # Prepositions
+        # Prepositions: forbid breaking both after ("prep | rest")
+        # and before ("word | prep rest") so the whole PP stays together
         if tok.pos_ == "ADP":
             forbid.add(i)
+            if i > 0:
+                forbid.add(i - 1)
 
         # Titles and units
         if tok.lower_ in TITLES or tok.lower_ in UNITS:
@@ -142,11 +145,6 @@ def forbidden_break_token_indices(doc) -> Set[int]:
             forbid.add(i - 1)  # before 's
             forbid.add(i)      # after 's
 
-        # of-genitives: also forbid breaking *before* "of" (ADP rule already
-        # forbids breaking after "of", so "X of Y" is kept fully intact)
-        if tok.lower_ == "of" and i > 0:
-            forbid.add(i - 1)
-
     return forbid
 
 # ============================================================
@@ -156,7 +154,7 @@ def forbidden_break_token_indices(doc) -> Set[int]:
 def is_break_after_function_word(line1: str) -> bool:
     return bool(
         re.search(
-            r"\b(of|to|in|on|at|for|as|by|with|and|or|but)\s*$",
+            r"\b(the|a|an|of|to|in|on|at|for|as|by|with|and|or|but)\s*$",
             line1.lower(),
         )
     )
