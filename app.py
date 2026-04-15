@@ -357,7 +357,7 @@ def format_transcript_hybrid(text: str, cfg: SubtitleCfg) -> str:
 st.title("Captioning Formatter Tool (Beta)")
 st.markdown(
     "Upload a text file. The formatted captions will be generated "
-    "according to some rule-based caption constraints."
+    "according to some rule-based caption constraints. YOU MUST REVIEW THE OUTPUT CAREFULLY BEFORE USING IT AS CAPTIONS, as the formatting is not perfect and may break words or split sentences inappropriately in some cases. This tool is intended to save time on manual caption formatting, but it cannot replace human judgement and careful review."
 )
 
 uploaded_file = st.file_uploader("Upload a .txt file", type=["txt"])
