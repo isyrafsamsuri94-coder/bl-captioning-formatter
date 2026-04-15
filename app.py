@@ -1,10 +1,10 @@
 import re
 from dataclasses import dataclass
-from typing import List, Set, Optional, Tuple
+from typing import List, Set, Optional
 
 import streamlit as st
 import spacy
-from spacy.matcher import PhraseMatcher, Matcher
+from spacy.matcher import PhraseMatcher
 
 # ============================================================
 # spaCy model loading (cached for Streamlit Cloud)
@@ -34,10 +34,6 @@ class SubtitleCfg:
 def normalize_ws(text: str) -> str:
     """Normalize whitespace only; preserve punctuation and words."""
     return re.sub(r"[ \t]+", " ", text).strip()
-
-def normalize_for_compare(text: str) -> str:
-    """Used only for validation comparisons."""
-    return re.sub(r"\s+", " ", text).strip()
 
 # ============================================================
 # Phrase protection configuration
@@ -96,13 +92,14 @@ def protected_spans(doc) -> List:
 
     # Proper noun sequences
     i = 0
-    while i < len(doc) - 1:
-        if doc[i].pos_ == "PROPN" and doc[i+1].pos_ == "PROPN":
+    while i < len(doc):
+        if i + 1 < len(doc) and doc[i].pos_ == "PROPN" and doc[i+1].pos_ == "PROPN":
             start = i
             while i < len(doc) and doc[i].pos_ == "PROPN":
                 i += 1
             spans.append(doc[start:i])
-        i += 1
+        else:
+            i += 1
 
     return spans
 
@@ -174,47 +171,6 @@ def punctuation_bonus(line1: str) -> int:
     return 0
 
 # ============================================================
-# Best 1–2 line split
-# ============================================================
-
-def best_two_line_split(block_text: str, cfg: SubtitleCfg) -> Optional[str]:
-    text = normalize_ws(block_text)
-    if len(text) <= cfg.max_len:
-        return text
-
-    # If only 1 line is allowed and text exceeds max_len, refuse to split
-    if cfg.max_lines == 1:
-        return None
-
-    doc = nlp(text)
-    forbid = forbidden_break_token_indices(doc)
-
-    best_score = -1
-    best_split = None
-
-    for i, tok in enumerate(doc[:-1]):
-        if tok.i in forbid:
-            continue
-
-        split_pos = tok.idx + len(tok.text)
-        left = text[:split_pos].rstrip()
-        right = text[split_pos:].lstrip()
-
-        if len(left) > cfg.max_len or len(right) > cfg.max_len:
-            continue
-        if len(right) < 15:
-            continue
-        if is_break_after_function_word(left):
-            continue
-
-        score = punctuation_bonus(left)
-        if score > best_score:
-            best_score = score
-            best_split = f"{left}\n{right}"
-
-    return best_split
-
-# ============================================================
 # Transcript segmentation
 # ============================================================
 
@@ -265,26 +221,6 @@ def pack_units_into_blocks(units: List[str], cfg: SubtitleCfg) -> List[str]:
 
     if buf:
         blocks.append(buf)
-
-    return blocks
-
-# ============================================================
-# Fallback hard wrap
-# ============================================================
-
-def hard_wrap_to_blocks(text: str, cfg: SubtitleCfg) -> List[str]:
-    text = normalize_ws(text)
-    blocks = []
-
-    while len(text) > cfg.block_budget:
-        idx = text.rfind(" ", 0, cfg.block_budget)
-        if idx == -1:
-            idx = cfg.block_budget
-        blocks.append(text[:idx].strip())
-        text = text[idx:].strip()
-
-    if text:
-        blocks.append(text)
 
     return blocks
 
@@ -405,16 +341,6 @@ def format_transcript_rules(text: str, cfg: SubtitleCfg) -> List[str]:
         blocks_out.pop()
 
     return blocks_out
-
-def blocks_to_plain_text(blocks: List[str]) -> str:
-    out_lines = []
-    for b in blocks:
-        if b == "":
-            out_lines.append("")
-        else:
-            out_lines.append(b)
-            out_lines.append("")
-    return "\n".join(out_lines).rstrip()
 
 def format_transcript_hybrid(text: str, cfg: SubtitleCfg) -> str:
     blocks = format_transcript_rules(text, cfg)
