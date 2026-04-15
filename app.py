@@ -1,5 +1,4 @@
 import re
-import requests
 from dataclasses import dataclass
 from typing import List, Set, Optional
 
@@ -354,31 +353,6 @@ def format_transcript_hybrid(text: str, cfg: SubtitleCfg) -> str:
     return "\n\n".join(content_blocks)
 
 # ============================================================
-# n8n webhook integration
-# ============================================================
-
-def send_to_n8n(text: str, webhook_url: str, timeout: int = 60) -> str:
-    """POST formatted text to n8n webhook and return the AI-reviewed text.
-
-    Expects the n8n flow to respond with JSON containing the reviewed text
-    under the key "output" (n8n AI Agent node default), "result", or "text".
-    """
-    response = requests.post(
-        webhook_url,
-        json={"formatted_text": text},
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    data = response.json()
-    # n8n can return a list wrapping the object
-    if isinstance(data, list):
-        data = data[0]
-    for key in ("output", "result", "text", "formatted_text"):
-        if key in data:
-            return str(data[key])
-    raise ValueError(f"Unexpected response keys from n8n: {list(data.keys())}")
-
-# ============================================================
 # Streamlit UI
 # ============================================================
 
@@ -403,20 +377,7 @@ if uploaded_file:
     with st.spinner("Formatting captions..."):
         output_text = format_transcript_hybrid(input_text, cfg)
 
-    # --- n8n AI agent review ---
-    webhook_url = st.secrets.get("WEBHOOK_URL", "")
-    if webhook_url:
-        try:
-            with st.spinner("Sending to AI agent for review..."):
-                output_text = send_to_n8n(output_text, webhook_url)
-            st.success("Formatting and AI review complete!")
-        except Exception as exc:
-            st.warning(
-                f"AI agent review failed — showing rule-based output. ({exc})"
-            )
-            st.success("Formatting complete!")
-    else:
-        st.success("Formatting complete!")
+    st.success("Formatting complete!")
 
     st.subheader("Preview")
     st.text_area("", value=output_text, height=400, disabled=True, label_visibility="collapsed")
