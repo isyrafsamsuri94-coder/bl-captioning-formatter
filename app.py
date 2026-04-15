@@ -129,11 +129,15 @@ def forbidden_break_token_indices(doc) -> Set[int]:
         if tok.dep_ in {"aux", "neg", "prt"}:
             forbid.add(i)
 
-        # Prepositions: forbid breaking both after ("prep | rest")
-        # and before ("word | prep rest") so the whole PP stays together
+        # Prepositions: always forbid breaking after ("prep | rest").
+        # Also forbid breaking before ("word | prep rest") only when the
+        # preposition is directly governed by the immediately preceding token
+        # (e.g. "distributed with", "coincide with", "member of").
+        # This avoids blocking clause-level breaks before prepositions like
+        # "to" in "from X to Y", where the head is far away.
         if tok.pos_ == "ADP":
             forbid.add(i)
-            if i > 0:
+            if i > 0 and tok.head.i == i - 1:
                 forbid.add(i - 1)
 
         # Titles and units
@@ -354,7 +358,7 @@ def format_transcript_hybrid(text: str, cfg: SubtitleCfg) -> str:
 
 st.title("Captioning Formatter Tool (Beta)")
 st.markdown(
-    "Upload a text file. The formatted captions will be generated according to some rule-based caption constraints. "
+    "Upload a text file. The formatted captions will be generated according to some rule-based caption constraints."
     "\nYOU MUST REVIEW THE OUTPUT CAREFULLY BEFORE USING IT AS CAPTIONS, as the formatting is not perfect and may break words or split sentences inappropriately in some cases. This tool is intended to save time on manual caption formatting, but it cannot replace human judgment and careful review."
 )
 
