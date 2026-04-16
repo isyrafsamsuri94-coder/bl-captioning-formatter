@@ -78,15 +78,15 @@ UNITS = {
 # Protected spans
 # ============================================================
 
+# PhraseMatcher built once at module level to avoid per-call rebuild cost
+_phrase_matcher = PhraseMatcher(nlp.vocab, attr="LOWER")
+_phrase_matcher.add("NBP", [nlp.make_doc(p) for p in NEVER_BREAK_PHRASES])
+
 def protected_spans(doc) -> List:
     spans = []
 
-    # Phrase matcher
-    matcher = PhraseMatcher(nlp.vocab, attr="LOWER")
-    patterns = [nlp.make_doc(p) for p in NEVER_BREAK_PHRASES]
-    matcher.add("NBP", patterns)
-
-    for _, start, end in matcher(doc):
+    # Phrase matcher (uses module-level _phrase_matcher, built once)
+    for _, start, end in _phrase_matcher(doc):
         spans.append(doc[start:end])
 
     # Named entities
@@ -198,14 +198,14 @@ def sentence_units(paragraph: str) -> List[str]:
     if not para:
         return []
     doc = nlp(para)
-    spacy_sents = [normalize_ws(sent.text) for sent in doc.sents if sent.text.strip()]
+    spacy_sents = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
     result = []
     for s in spacy_sents:
         result.extend(_regex_split_sentences(s))
     return result
 
-def clause_splits(sentence: str) -> List[str]:
-    if len(sentence) > 180:
+def clause_splits(sentence: str, max_len: int = 120) -> List[str]:
+    if len(sentence) > max_len:
         parts = re.split(r"[,;:]", sentence)
         return [normalize_ws(p) for p in parts if p.strip()]
     return [sentence]
@@ -323,27 +323,86 @@ def remove_trailing_commas_from_blocks(blocks: List[str]) -> List[str]:
 # ============================================================
 # PPTX notes extraction
 # ============================================================
-def _get_notes_text_from_xml(notes_slide):
-    """Fallback: extract notes body text directly from XML.
+_M = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 
-    Needed when the notes body placeholder is wrapped inside an
-    <mc:AlternateContent> block, which python-pptx's notes_text_frame
-    property does not traverse.
+# Precomputed tag strings to avoid per-call string formatting in recursion
+_M_T   = "{%s}t"   % _M
+_M_F   = "{%s}f"   % _M
+_M_NUM = "{%s}num" % _M
+_M_DEN = "{%s}den" % _M
+
+# OMML tag names that carry no displayable text (properties / control elements)
+_OMML_SKIP_TAGS = {
+    "{%s}%s" % (_M, t) for t in (
+        "rPr", "fPr", "sSubPr", "sSupPr", "sSubSupPr", "radPr",
+        "ctrlPr", "limLocPr", "limUppPr", "limLowPr", "eqArrPr",
+        "boxPr", "borderBoxPr", "groupChrPr", "naryPr", "funcPr",
+        "phantPr", "accPr", "barPr", "dPr",
+    )
+}
+
+
+def _omml_to_text(el):
+    """Recursively convert an OMML element to plain text.
+
+    Fractions (m:f) are rendered as num/den so that e.g. V/I is not
+    collapsed into VI.
     """
-    A = "http://schemas.openxmlformats.org/drawingml/2006/main"
-    P = "http://schemas.openxmlformats.org/presentationml/2006/main"
+    tag = el.tag
+
+    if tag in _OMML_SKIP_TAGS:
+        return ""
+
+    # Text leaf
+    if tag == _M_T:
+        return el.text or ""
+
+    # Fraction → num/den
+    if tag == _M_F:
+        num_el = el.find(_M_NUM)
+        den_el = el.find(_M_DEN)
+        num_text = _omml_to_text(num_el) if num_el is not None else ""
+        den_text = _omml_to_text(den_el) if den_el is not None else ""
+        return "%s/%s" % (num_text, den_text)
+
+    # Default: concatenate children in document order
+    return "".join(_omml_to_text(child) for child in el)
+
+
+def _extract_slide_notes_text(notes_slide):
+    """Extract all text from a notes slide via XML.
+
+    Handles two issues that python-pptx misses:
+    1. Notes body placeholder wrapped in <mc:AlternateContent> blocks.
+    2. Inline OMML math equations (<a14:m><m:oMath>) including fractions.
+    """
+    A   = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    P   = "http://schemas.openxmlformats.org/presentationml/2006/main"
+    A14 = "http://schemas.microsoft.com/office/drawing/2010/main"
+
     root = notes_slide._element
     for sp in root.iter("{%s}sp" % P):
         ph = sp.find(".//{%s}ph" % P)
         if ph is not None and ph.get("type") == "body" and ph.get("idx") == "1":
             txBody = sp.find("{%s}txBody" % P)
-            if txBody is not None:
-                paras = txBody.findall("{%s}p" % A)
-                para_texts = [
-                    "".join(t.text or "" for t in p.findall(".//{%s}t" % A))
-                    for p in paras
-                ]
-                return "\n".join(para_texts)
+            if txBody is None:
+                return ""
+            para_texts = []
+            for para in txBody.findall("{%s}p" % A):
+                parts = []
+                for child in para:
+                    ctag = child.tag
+                    if ctag == "{%s}r" % A:
+                        t = child.find("{%s}t" % A)
+                        if t is not None and t.text:
+                            parts.append(t.text)
+                    elif ctag == "{%s}m" % A14:
+                        # Inline OMML block — use recursive converter
+                        parts.append(_omml_to_text(child))
+                    elif ctag == "{%s}br" % A:
+                        parts.append("\n")
+                para_texts.append("".join(parts))
+            return "\n".join(para_texts)
     return ""
 
 
@@ -352,11 +411,7 @@ def extract_notes(pptx_file):
     notes = []
     for slide in prs.slides:
         if slide.has_notes_slide:
-            notes_tf = slide.notes_slide.notes_text_frame
-            if notes_tf is None:
-                text = _get_notes_text_from_xml(slide.notes_slide).strip()
-            else:
-                text = notes_tf.text.strip()
+            text = _extract_slide_notes_text(slide.notes_slide).strip()
             if text:
                 notes.append(text)
     return notes
@@ -372,7 +427,7 @@ def format_transcript_rules(text: str, cfg: SubtitleCfg) -> List[str]:
     for p in paragraphs:
         sentences = sentence_units(p)
         for sent in sentences:
-            clauses = clause_splits(sent)
+            clauses = clause_splits(sent, cfg.max_len)
             blocks = pack_units_into_blocks(clauses, cfg)
             for b in blocks:
                 if len(b) > cfg.max_len:
