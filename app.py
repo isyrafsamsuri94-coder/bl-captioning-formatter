@@ -323,12 +323,40 @@ def remove_trailing_commas_from_blocks(blocks: List[str]) -> List[str]:
 # ============================================================
 # PPTX notes extraction
 # ============================================================
+def _get_notes_text_from_xml(notes_slide):
+    """Fallback: extract notes body text directly from XML.
+
+    Needed when the notes body placeholder is wrapped inside an
+    <mc:AlternateContent> block, which python-pptx's notes_text_frame
+    property does not traverse.
+    """
+    A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    P = "http://schemas.openxmlformats.org/presentationml/2006/main"
+    root = notes_slide._element
+    for sp in root.iter("{%s}sp" % P):
+        ph = sp.find(".//{%s}ph" % P)
+        if ph is not None and ph.get("type") == "body" and ph.get("idx") == "1":
+            txBody = sp.find("{%s}txBody" % P)
+            if txBody is not None:
+                paras = txBody.findall("{%s}p" % A)
+                para_texts = [
+                    "".join(t.text or "" for t in p.findall(".//{%s}t" % A))
+                    for p in paras
+                ]
+                return "\n".join(para_texts)
+    return ""
+
+
 def extract_notes(pptx_file):
     prs = Presentation(pptx_file)
     notes = []
     for slide in prs.slides:
         if slide.has_notes_slide:
-            text = slide.notes_slide.notes_text_frame.text.strip()
+            notes_tf = slide.notes_slide.notes_text_frame
+            if notes_tf is None:
+                text = _get_notes_text_from_xml(slide.notes_slide).strip()
+            else:
+                text = notes_tf.text.strip()
             if text:
                 notes.append(text)
     return notes
@@ -410,7 +438,7 @@ if uploaded_file is not None:
 
         st.success("Extraction complete!")
         st.subheader("Preview")
-        st.text_area("", value=output_text, height=400, disabled=True, label_visibility="collapsed")
+        st.text_area("Extracted speaker notes", value=output_text, height=400, disabled=True, label_visibility="collapsed")
 
         st.download_button(
             label="Download speaker notes",
@@ -432,7 +460,7 @@ if uploaded_file is not None:
 
             st.success("Formatting complete!")
             st.subheader("Preview")
-            st.text_area("", value=output_text, height=400, disabled=True, label_visibility="collapsed")
+            st.text_area("Formatted captions", value=output_text, height=400, disabled=True, label_visibility="collapsed")
 
             st.download_button(
                 label="Download formatted captions",
@@ -450,7 +478,7 @@ if uploaded_file is not None:
         st.success("Formatting complete!")
 
         st.subheader("Preview")
-        st.text_area("", value=output_text, height=400, disabled=True, label_visibility="collapsed")
+        st.text_area("Formatted captions", value=output_text, height=400, disabled=True, label_visibility="collapsed")
 
         st.download_button(
             label="Download formatted text",
