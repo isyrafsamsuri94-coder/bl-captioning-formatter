@@ -5,6 +5,8 @@ from typing import List, Set, Optional
 import streamlit as st
 import spacy
 from spacy.matcher import PhraseMatcher
+from pptx import Presentation
+import io
 
 # ============================================================
 # spaCy model loading (cached for Streamlit Cloud)
@@ -319,6 +321,18 @@ def remove_trailing_commas_from_blocks(blocks: List[str]) -> List[str]:
     return out
 
 # ============================================================
+# PPTX notes extraction
+# ============================================================
+def extract_notes(pptx_file):
+    prs = Presentation(pptx_file)
+    notes = []
+    for slide in prs.slides:
+        if slide.has_notes_slide:
+            text = slide.notes_slide.notes_text_frame.text.strip()
+            if text:
+                notes.append(text)
+    return notes
+# ============================================================
 # Main formatter
 # ============================================================
 
@@ -356,35 +370,91 @@ def format_transcript_hybrid(text: str, cfg: SubtitleCfg) -> str:
 # Streamlit UI
 # ============================================================
 
-st.title("Captioning Formatter Tool (Beta)")
+st.title("BL Captioning Formatter (Beta)")
 st.markdown(
-    "Upload a text file. The formatted captions will be generated according to some rule-based caption constraints."
-    "\nYOU MUST REVIEW THE OUTPUT CAREFULLY BEFORE USING IT AS CAPTIONS, as the formatting is not perfect and may break words or split sentences inappropriately in some cases. This tool is intended to save time on manual caption formatting, but it cannot replace human judgment and careful review."
+    """
+    Upload `.txt` file to generate formatted captions for Descript 
+    \nOR 
+    \nUpload `.pptx` file to extract speaker notes and optionally format them into captions.
+
+    > ⚠️ **You must review the output carefully before using it as captions.**
+    > The formatting may not be perfect and could break words or split sentences inappropriately in some cases.
+    > This tool is intended to save time on manual caption formatting, but cannot replace human judgment.
+    """
 )
 
-uploaded_file = st.file_uploader("Upload a .txt file", type=["txt"])
+mode = st.selectbox(
+    "What would you like to do?",
+    ["Select an option...", "Format captions from TXT", "Extract speaker notes from PPTX"],
+)
 
-if uploaded_file:
-    input_text = uploaded_file.read().decode("utf-8")
+if mode == "Format captions from TXT":
+    uploaded_file = st.file_uploader("Upload a .txt file", type=["txt"])
+elif mode == "Extract speaker notes from PPTX":
+    uploaded_file = st.file_uploader("Upload a .pptx file", type=["pptx"])
+else:
+    uploaded_file = None
+
+if uploaded_file is not None:
 
     cfg = SubtitleCfg(
-        max_len=110,
-        max_lines=2,
-        block_budget=110,
-        preserve_paragraph_breaks=False,
+    max_len=110,
+    max_lines=2,
+    block_budget=110,
+    preserve_paragraph_breaks=False,
     )
 
-    with st.spinner("Formatting captions..."):
-        output_text = format_transcript_hybrid(input_text, cfg)
+    if mode == "Extract speaker notes from PPTX":
+        slides_text = extract_notes(io.BytesIO(uploaded_file.read()))
+        output_text = "\n\n".join(slides_text)
 
-    st.success("Formatting complete!")
+        st.success("Extraction complete!")
+        st.subheader("Preview")
+        st.text_area("", value=output_text, height=400, disabled=True, label_visibility="collapsed")
 
-    st.subheader("Preview")
-    st.text_area("", value=output_text, height=400, disabled=True, label_visibility="collapsed")
+        st.download_button(
+            label="Download speaker notes",
+            data=output_text,
+            file_name="speaker_notes.txt",
+            mime="text/plain",
+        )
 
-    st.download_button(
-        label="Download formatted text",
-        data=output_text,
-        file_name="formatted_captions.txt",
-        mime="text/plain",
-    )
+        formatextractednotes = st.selectbox(
+        "Would you like to format the extracted notes into captions?",
+        ["No", "Yes"]
+        )
+
+        if formatextractednotes == "Yes":
+            input_text = output_text
+
+            with st.spinner("Formatting captions..."):
+                output_text = format_transcript_hybrid(input_text, cfg)
+
+            st.success("Formatting complete!")
+            st.subheader("Preview")
+            st.text_area("", value=output_text, height=400, disabled=True, label_visibility="collapsed")
+
+            st.download_button(
+                label="Download formatted captions",
+                data=output_text,
+                file_name="formatted_captions.txt",
+                mime="text/plain",
+            )
+
+    else:
+        input_text = uploaded_file.read().decode("utf-8")
+
+        with st.spinner("Formatting captions..."):
+            output_text = format_transcript_hybrid(input_text, cfg)
+
+        st.success("Formatting complete!")
+
+        st.subheader("Preview")
+        st.text_area("", value=output_text, height=400, disabled=True, label_visibility="collapsed")
+
+        st.download_button(
+            label="Download formatted text",
+            data=output_text,
+            file_name="formatted_captions.txt",
+            mime="text/plain",
+        )
